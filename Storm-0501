@@ -1,0 +1,248 @@
+// Device Recon: 
+DeviceProcessEvents
+| where Timestamp > ago(1h)
+| where ProcessCommandLine has_any ("sc query sense", "sc query windefend")
+| extend CommandPattern = case(
+    ProcessCommandLine has "sc query sense", "DefenderEndpointCheck",
+    ProcessCommandLine has "sc query windefend", "DefenderAntivirusCheck",
+)
+| project Timestamp, DeviceName, AccountName, ProcessCommandLine, CommandPattern, InitiatingProcessCommandLine
+
+// Domain Federation addition
+AuditLogs
+| where ActivityDisplayName in ("Set domain federation", "Update domain federation", "Set federation settings on domain")
+| where Result == "success"
+| extend FederatedDomain = tostring(TargetResources[0].displayName)
+| project TimeGenerated, ActivityDisplayName, InitiatedBy, FederatedDomain, AdditionalDetails
+
+// Elevate Access behavior after a malicious sign-in 
+let TimeWindow = 6h;
+let SuspiciousAuth = SigninLogs
+| where TimeGenerated > ago(7d)
+| where RiskLevelAggregated in ("high", "medium")
+| extend UserKey = UserId
+| project AuthTime = TimeGenerated, UserKey, UserPrincipalName, AuthIP = IPAddress, 
+          RiskLevel = RiskLevelAggregated, AuthDetails = AuthenticationDetails;
+let Elevations = AzureActivity
+| where TimeGenerated > ago(7d)
+| where OperationNameValue == "Microsoft.Authorization/elevateAccess/action"
+| where ActivityStatusValue == "Success"
+| extend UserKey = Caller
+| project ElevationTime = TimeGenerated, UserKey, ElevationIP = CallerIpAddress;
+SuspiciousAuth
+| join kind=inner Elevations on UserKey
+| where ElevationTime > AuthTime and ElevationTime < (AuthTime + TimeWindow)
+| project 
+    TimeGenerated = ElevationTime,
+    UserPrincipalName,
+    UserKey,
+    AuthTime,
+    ElevationTime,
+    AuthIP,
+    ElevationIP,
+    RiskLevel,
+    TimeBetween = ElevationTime - AuthTime
+| sort by ElevationTime desc
+
+// Owner assignments by users who don't normally assign roles
+let BaselinePeriod = 30d;
+let DetectionPeriod = 1d;
+let RoleAssignmentBaseline = AzureActivity
+| where TimeGenerated between (ago(BaselinePeriod) .. ago(DetectionPeriod))
+| where OperationNameValue == "Microsoft.Authorization/roleAssignments/write"
+| where ActivityStatusValue == "Success"
+| summarize BaselineAssignments = count() by Caller
+| where BaselineAssignments > 0;
+AzureActivity
+| where TimeGenerated > ago(DetectionPeriod)
+| where OperationNameValue == "Microsoft.Authorization/roleAssignments/write"
+| where ActivityStatusValue == "Success"
+| extend RoleData = parse_json(Properties)
+| extend RoleDefinitionId = tostring(RoleData.requestbody.Properties.RoleDefinitionId)
+| where RoleDefinitionId endswith "/8e3af657-a8ff-443c-a75c-2fe8c4bcb635" 
+| join kind=leftanti RoleAssignmentBaseline on Caller 
+| project 
+    TimeGenerated,
+    Caller,
+    CallerIpAddress,
+    SubscriptionId,
+    ResourceGroup,
+    AssignedScope = tostring(RoleData.requestbody.Properties.Scope),
+| sort by TimeGenerated desc
+
+// Storage Account Public Access Configuration Changes
+AzureActivity
+| where TimeGenerated > ago(7d)
+| where OperationNameValue == "Microsoft.Storage/storageAccounts/write"
+| where ActivityStatusValue == "Success"
+| extend StorageData = parse_json(Properties)
+| where Properties contains "allowBlobPublicAccess" or Properties contains "publicNetworkAccess"
+| project 
+    TimeGenerated,
+    Caller,
+    CallerIpAddress,
+    SubscriptionId,
+    ResourceGroup,
+    StorageAccountName = tostring(split(ResourceId, '/')[8]),
+    ResourceId,
+    Properties,
+    CorrelationId
+| sort by TimeGenerated desc
+
+// Storage Account Public Access Correlation with Data Operations
+let PublicAccessEnabled = AzureActivity
+| where TimeGenerated > ago(7d)
+| where OperationNameValue == "Microsoft.Storage/storageAccounts/write"
+| where ActivityStatusValue == "Success"
+| where Properties contains "allowBlobPublicAccess" or Properties contains "publicNetworkAccess"
+| extend StorageAccountName = tostring(split(ResourceId, '/')[8])
+| project EnableTime = TimeGenerated, StorageAccountName, Caller, SubscriptionId;
+AzureDiagnostics
+| where TimeGenerated > ago(7d)
+| where Category == "StorageRead" or Category == "StorageWrite"
+| where OperationName in ("GetBlob", "PutBlob", "ListBlobs")
+| extend StorageAccountName = tostring(split(ResourceId, '/')[8])
+| join kind=inner PublicAccessEnabled on StorageAccountName
+| where TimeGenerated > EnableTime and TimeGenerated < (EnableTime + 1h)
+| project 
+    TimeGenerated,
+    EnableTime,
+    StorageAccountName,
+    Caller,
+    OperationName,
+    CallerIpAddress,
+    TimeSinceEnabled = TimeGenerated - EnableTime
+| sort by EnableTime desc
+
+// Mass Storage Account Key Harvesting
+AzureActivity
+| where TimeGenerated > ago(7d)
+| where OperationNameValue == "Microsoft.Storage/storageAccounts/listkeys/action"
+| where ActivityStatusValue == "Success"
+| summarize 
+    TimeGenerated = max(TimeGenerated),
+    StorageAccountsAccessed = dcount(ResourceId),
+    SubscriptionsAffected = dcount(SubscriptionId),
+    ResourceGroupsAffected = dcount(ResourceGroup),
+    StorageAccounts = make_set(tostring(split(ResourceId, '/')[8])),
+    FirstKeyAccess = min(TimeGenerated),
+    LastKeyAccess = max(TimeGenerated),
+    IPAddresses = make_set(CallerIpAddress)
+    by Caller
+| where StorageAccountsAccessed >= 3 or SubscriptionsAffected >= 2
+| extend HarvestingVelocity = LastKeyAccess - FirstKeyAccess
+| sort by StorageAccountsAccessed desc
+
+// Storage Account Key Access After Privilege Escalation
+let ElevateAccessEvents = AzureActivity
+| where TimeGenerated > ago(7d)
+| where OperationNameValue == "Microsoft.Authorization/elevateAccess/action"
+| where ActivityStatusValue == "Success"
+| extend UserKey = Caller
+| project ElevationTime = TimeGenerated, UserKey;
+AzureActivity
+| where TimeGenerated > ago(7d)
+| where OperationNameValue == "Microsoft.Storage/storageAccounts/listkeys/action"
+| where ActivityStatusValue == "Success"
+| extend UserKey = Caller
+| join kind=inner ElevateAccessEvents on UserKey
+| where TimeGenerated > ElevationTime and TimeGenerated < (ElevationTime + 2h)
+| project 
+    TimeGenerated,
+    UserKey,
+    ElevationTime,
+    CallerIpAddress,
+    SubscriptionId,
+    ResourceGroup,
+    StorageAccountName = tostring(split(ResourceId, '/')[8]),
+    TimeSinceElevation = TimeGenerated - ElevationTime,
+    ResourceId
+| sort by TimeGenerated desc
+
+// Impact behavior ( Deze zouden we evt nog kunnen correleren met die privelege escalation detectie ) 
+AzureActivity
+| where TimeGenerated >= ago(24h)
+| where OperationNameValue in (
+    "Microsoft.Compute/snapshots/delete",
+    "Microsoft.Compute/restorePointCollections/delete", 
+    "Microsoft.Storage/storageAccounts/delete",
+    "Microsoft.RecoveryServices/Vaults/backupFabrics/protectionContainers/delete"
+)
+| where ActivityStatusValue == "Success"
+| summarize 
+    DeleteCount = count(),
+    DistinctResources = dcount(ResourceId),
+    Operations = make_set(OperationNameValue),
+    FirstActivity = min(TimeGenerated),
+    LastActivity = max(TimeGenerated),
+    ResourceGroups = make_set(ResourceGroup),
+    Resources = make_set(ResourceId)
+    by CallerIpAddress, Caller, SubscriptionId
+| where DeleteCount >= 10
+| extend TimeWindow = LastActivity - FirstActivity
+| project 
+    CallerIpAddress,
+    Caller,
+    SubscriptionId,
+    DeleteCount,
+    DistinctResources,
+    Operations,
+    ResourceGroups,
+    TimeWindow,
+    FirstActivity,
+    LastActivity,
+    Resources
+
+
+// FUll Cloud attack chain 
+let DeletionActivities = AzureActivity
+| where TimeGenerated >= ago(24h)
+| where OperationNameValue in (
+    "Microsoft.Compute/snapshots/delete",
+    "Microsoft.Compute/restorePointCollections/delete", 
+    "Microsoft.Storage/storageAccounts/delete",
+    "Microsoft.RecoveryServices/Vaults/backupFabrics/protectionContainers/delete"
+)
+| where ActivityStatusValue == "Success"
+| extend ActivityType = "ResourceDeletion";
+let SecurityDeletions = AzureActivity
+| where TimeGenerated >= ago(24h)
+| where OperationNameValue in (
+    "Microsoft.Authorization/locks/delete",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/immutabilityPolicies/delete"
+)
+| where ActivityStatusValue == "Success";
+let EncryptionSetup = AzureActivity
+| where TimeGenerated >= ago(24h)
+| where OperationNameValue in (
+    "Microsoft.KeyVault/vaults/write",
+    "Microsoft.Storage/storageAccounts/encryptionScopes/write"
+)
+| where ActivityStatusValue == "Success";
+union DeletionActivities, SecurityDeletions, EncryptionSetup
+| summarize 
+    TotalActivities = count(),
+    ActivityTypes = make_set(ActivityType),
+    Operations = make_set(OperationNameValue),
+    ResourcesAffected = dcount(ResourceId),
+    SubscriptionsAffected = dcount(SubscriptionId),
+    FirstActivity = min(TimeGenerated),
+    LastActivity = max(TimeGenerated),
+    AllResources = make_set(ResourceId)
+    by CallerIpAddress, Caller
+| where array_length(ActivityTypes) >= 2
+| where TotalActivities >= 10
+| extend AttackDuration = LastActivity - FirstActivity
+| project 
+    CallerIpAddress,
+    Caller,
+    TotalActivities,
+    ActivityTypes,
+    ResourcesAffected,
+    SubscriptionsAffected,
+    AttackDuration,
+    FirstActivity,
+    LastActivity,
+    Operations,
+    AllResources
+| order by TotalActivities desc
