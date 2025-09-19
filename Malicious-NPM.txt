@@ -1,4 +1,4 @@
-["mcp-knowledge-base","0.0.2","5a87d68716cf9d99ec90835d623559bead2a76d3",
+"mcp-knowledge-base","0.0.2","5a87d68716cf9d99ec90835d623559bead2a76d3",
 "html-to-base64-image","1.0.2","b65a8f02bcc425e9f43f44c4062e57a7ed0bb4ac",
 "encounter-playground","0.0.4","a134cb5a9c3187c7e2419ce5981bc8365cfbb1d7",
 "encounter-playground","0.0.3","edca8792f335b64b6929ef08b5d9bf812cc9ce77",
@@ -363,4 +363,4 @@
 "monorepo-next","13.0.2","6bc7f46b3bdb3021d57782f27028030d95b5ce38",
 "remark-preset-lint-crowdstrike","4.0.2","930719f947239b5ddf61ca30ed5583ace8b95ede",
 "verror-extra","6.0.1","af797c0a93b635e0fa17b5d6b08038fa4cd2db16",
-"yargs-help-output","5.0.3","ec45aaf47ec08f52fad9b6ef12f5edcbe4fd192f"];
+"yargs-help-output","5.0.3","ec45aaf47ec08f52fad9b6ef12f5edcbe4fd192f
