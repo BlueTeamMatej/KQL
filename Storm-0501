@@ -45,7 +45,6 @@ SuspiciousAuth
     TimeBetween = ElevationTime - AuthTime
 | sort by ElevationTime desc
 
-// Owner assignments by users who don't normally assign roles
 let BaselinePeriod = 30d;
 let DetectionPeriod = 1d;
 let RoleAssignmentBaseline = AzureActivity
@@ -60,16 +59,17 @@ AzureActivity
 | where ActivityStatusValue == "Success"
 | extend RoleData = parse_json(Properties)
 | extend RoleDefinitionId = tostring(RoleData.requestbody.Properties.RoleDefinitionId)
-| where RoleDefinitionId endswith "/8e3af657-a8ff-443c-a75c-2fe8c4bcb635" 
-| join kind=leftanti RoleAssignmentBaseline on Caller 
-| project 
+| where RoleDefinitionId endswith "/8e3af657-a8ff-443c-a75c-2fe8c4bcb635"
+| join kind=leftanti RoleAssignmentBaseline on Caller
+| project
     TimeGenerated,
     Caller,
     CallerIpAddress,
     SubscriptionId,
     ResourceGroup,
-    AssignedScope = tostring(RoleData.requestbody.Properties.Scope),
+    AssignedScope = tostring(RoleData.requestbody.Properties.Scope)
 | sort by TimeGenerated desc
+
 
 // Storage Account Public Access Configuration Changes
 AzureActivity
