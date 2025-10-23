@@ -4,10 +4,9 @@ DeviceProcessEvents
 | where ProcessCommandLine has_any(dynamic(["sc query sense", "sc query windefend"]))
 | extend CommandPattern = case(
     ProcessCommandLine has "sc query sense", "DefenderEndpointCheck",
-    ProcessCommandLine has "sc query windefend", "DefenderAntivirusCheck"
+    ProcessCommandLine has "sc query windefend", "DefenderAntivirusCheck", "unknown"
 )
 | project TimeGenerated, DeviceName, AccountName, ProcessCommandLine, CommandPattern, InitiatingProcessCommandLine
-
 
 // Domain Federation addition
 AuditLogs
