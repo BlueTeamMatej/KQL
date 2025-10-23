@@ -1,12 +1,13 @@
 // Device Recon: 
 DeviceProcessEvents
-| where Timestamp > ago(1h)
-| where ProcessCommandLine has_any ("sc query sense", "sc query windefend")
+| where TimeGenerated > ago(30d)
+| where ProcessCommandLine has_any(dynamic(["sc query sense", "sc query windefend"]))
 | extend CommandPattern = case(
     ProcessCommandLine has "sc query sense", "DefenderEndpointCheck",
-    ProcessCommandLine has "sc query windefend", "DefenderAntivirusCheck",
+    ProcessCommandLine has "sc query windefend", "DefenderAntivirusCheck"
 )
-| project Timestamp, DeviceName, AccountName, ProcessCommandLine, CommandPattern, InitiatingProcessCommandLine
+| project TimeGenerated, DeviceName, AccountName, ProcessCommandLine, CommandPattern, InitiatingProcessCommandLine
+
 
 // Domain Federation addition
 AuditLogs
