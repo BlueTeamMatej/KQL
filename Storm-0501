@@ -80,7 +80,6 @@ AzureActivity
 | project 
     TimeGenerated,
     Caller,
-    CallerIpAddress,
     SubscriptionId,
     ResourceGroup,
     StorageAccountName = tostring(split(ResourceId, '/')[8]),
